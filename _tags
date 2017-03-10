@@ -1,5 +1,5 @@
 true : bin_annot, safe_string, keep_locs
-true : warn(A-44-45)
+true : warn(A-42-44-45)
 true : package(ipaddr charrua-core cstruct rresult)
 
 <src> : include

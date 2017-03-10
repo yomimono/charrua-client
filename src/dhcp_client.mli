@@ -23,6 +23,12 @@ val lease : t -> Dhcp_wire.pkt option
  * Note that the library has no sense of the passage of time, so expiration
  * is not considered; there is no guarantee that [Some lease] is still
  * valid on the network.  The caller is responsible for keeping track of
- * time time at which the lease was obtained, and renewing the lease when
+ * the time at which the lease was obtained, and renewing the lease when
  * necessary.
  * If [t] hasn't yet completed a lease transaction, [None] will be returned. *)
+
+val renew : t -> (t * buffer) option
+(** [renew t] returns either Some ([t], [buffer]) representing
+ * the next state and suggested action
+ * of the client attempting to renew [t]'s lease,
+ * or None if [t] does not have a lease and therefore can't be renewed. *)

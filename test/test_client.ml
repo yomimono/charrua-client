@@ -8,6 +8,8 @@ let msgtype =
   end in
   (module M : Alcotest.TESTABLE with type t = M.t)
 
+let empty_db = Dhcp_server.Lease.make_db ()
+
 module Defaults = struct
   let client_mac = Macaddr.of_string_exn "00:16:3e:ba:eb:ba"
   let server_mac = Macaddr.of_string_exn "00:16:3e:00:00:00"
@@ -20,7 +22,6 @@ module Defaults = struct
     ?max_lease_time:None ?hosts:None
     ~addr_tuple:(server_ip, server_mac)
     ~network:server_network ~range ~options
-  let empty_db = Dhcp_server.Lease.make_db ()
 end
 
 let random_buffer () =
@@ -42,6 +43,14 @@ let rec no_result t n () =
 let parseable buf = 
   Alcotest.(check bool) "buffer we constructed is valid dhcp" true (Dhcp_wire.is_dhcp buf (Cstruct.len buf))
 
+let assert_reply p =
+  let open Dhcp_server.Input in
+  match p with
+  | Warning s | Error s -> Alcotest.fail s
+  | Silence -> Alcotest.fail "Silence from the server in response to a request"
+  | Update _db -> Alcotest.fail "database update but no reply -- in our context this is likely a bug"
+  | Reply (pkt, db) -> (pkt, db)
+
 let start_makes_dhcp () =
   let (_s, buf) = Dhcp_client.create Defaults.client_mac in
   (* for now, any positive result is fine *)
@@ -54,13 +63,26 @@ let client_to_selecting () =
   Alcotest.(check (result pass reject)) "input succeeds" answer answer;
   (s, Rresult.R.get_ok answer)
 
-let assert_reply p =
-  let open Dhcp_server.Input in
-  match p with
-  | Warning s | Error s -> Alcotest.fail s
-  | Silence -> Alcotest.fail "Silence from the server in response to a request"
-  | Update _db -> Alcotest.fail "database update but no reply -- in our context this is likely a bug"
-  | Reply (pkt, db) -> (pkt, db)
+let client_to_bound () =
+  let open Dhcp_wire in
+  let open Defaults in
+  let (s, dhcpdiscover) = client_to_selecting () in
+  let (dhcpoffer, db) = assert_reply @@ Dhcp_server.Input.input_pkt config empty_db dhcpdiscover 0l in
+  match Dhcp_client.input s (Dhcp_wire.buf_of_pkt dhcpoffer) with
+  | (_, None) -> Alcotest.fail "couldn't get client to respond to DHCPOFFER"
+  | (s, Some (buf)) ->
+    let dhcprequest = Rresult.R.get_ok @@ Dhcp_wire.pkt_of_buf buf (Cstruct.len buf) in
+    let (dhcpack, _db) = assert_reply @@ Dhcp_server.Input.input_pkt config db dhcprequest 0l in
+    Alcotest.(check (option msgtype)) "got a DHCPACK in response to DHCPREQUEST"
+      (Some DHCPACK) (find_message_type dhcpack.options);
+    match Dhcp_client.input s (Dhcp_wire.buf_of_pkt dhcpack) with
+    | _s, Some (_) ->
+       Alcotest.fail "client wanted to send more packets after receiving DHCPACK"
+    | s, None ->
+       Alcotest.(check (option pass)) "lease is held" (Some dhcpack) (Dhcp_client.lease s);
+       match Dhcp_client.lease s with
+       | None -> Alcotest.fail "Dhcp_client.lease failed on a client in BOUND state"
+       | Some lease -> db, s, lease
 
 let server_accepts_start_packet () =
   let open Defaults in
@@ -134,6 +156,67 @@ let client_returns_lease () =
     | s, None ->
        Alcotest.(check (option pass)) "lease is held" (Some dhcpack) (Dhcp_client.lease s)
 
+let no_lease_no_renewal () =
+  let (s, _discover) = client_to_selecting () in
+  Alcotest.(check (option pass)) "no renewal for non-bound clients" None (Dhcp_client.renew s)
+
+let renew_generates_packet () =
+  let open Dhcp_wire in
+  let (_db, s, _lease) = client_to_bound () in
+  match Dhcp_client.renew s with
+  | None -> Alcotest.fail "renew refused to cooperate with reasonable state"
+  | Some (_s, renewal) ->
+  let renewal = Rresult.R.get_ok @@ Dhcp_wire.pkt_of_buf renewal (Cstruct.len renewal) in
+  Alcotest.(check (option msgtype)) "send dhcprequest when renewing" (Some DHCPREQUEST) (find_message_type renewal.options)
+
+let server_accepts_renewal () =
+  let open Dhcp_wire in
+  let db, s, _lease = client_to_bound () in
+  match Dhcp_client.renew s with
+  | None -> Alcotest.fail "renew refused to cooperate with reasonable state"
+  | Some (_s, renewal) ->
+  let renewal = Rresult.R.get_ok @@ Dhcp_wire.pkt_of_buf renewal (Cstruct.len renewal) in
+  let (dhcpack, _db) = assert_reply @@ Dhcp_server.Input.input_pkt Defaults.config db renewal 0l in
+  Alcotest.(check (option msgtype)) "got a DHCPACK in response to DHCPREQUEST for renewal"
+    (Some DHCPACK) (find_message_type dhcpack.options)
+
+let client_accepts_renewal () =
+  let open Dhcp_wire in
+  let db, s, _lease = client_to_bound () in
+  match Dhcp_client.renew s with
+  | None -> Alcotest.fail "renew refused to cooperate with reasonable state"
+  | Some (s, renewal) ->
+  let renewal = Rresult.R.get_ok @@ Dhcp_wire.pkt_of_buf renewal (Cstruct.len renewal) in
+  let (dhcpack, _db) = assert_reply @@ Dhcp_server.Input.input_pkt Defaults.config db renewal 0l in
+  Alcotest.(check (option msgtype)) "got a DHCPACK in response to DHCPREQUEST for renewal"
+    (Some DHCPACK) (find_message_type dhcpack.options);
+  match Dhcp_client.input s (Dhcp_wire.buf_of_pkt dhcpack) with
+  | _s, Some (_) ->
+     Alcotest.fail "client wanted to send more packets after receiving DHCPACK"
+  | s, None ->
+     Alcotest.(check (option pass)) "lease is held" (Some dhcpack) (Dhcp_client.lease s)
+
+let client_rebinds () =
+  let open Dhcp_wire in
+  let _db, s, _lease = client_to_bound () in
+  match Dhcp_client.renew s with
+  | None -> Alcotest.fail "renew refused to cooperate with reasonable state"
+  | Some (s, renewal) ->
+  let renewal = Rresult.R.get_ok @@ Dhcp_wire.pkt_of_buf renewal (Cstruct.len renewal) in
+  let leaseless_server = Dhcp_server.Config.{ Defaults.config with range = None } in
+  let (dhcpnak, _db) = assert_reply @@ Dhcp_server.Input.input_pkt leaseless_server empty_db renewal 0l in
+  Alcotest.(check (option msgtype)) "got a DHCPNAK in response to DHCPREQUEST for renewal"
+    (Some DHCPNAK) (find_message_type dhcpnak.options);
+  match Dhcp_client.input s (Dhcp_wire.buf_of_pkt dhcpnak) with
+  | _s, None ->
+     Alcotest.fail "client should have wanted to send packets after receiving DHCPNAK in renewal"
+  | s, (Some buf) ->
+     Alcotest.(check (option pass)) "lease is NOT held" (None) (Dhcp_client.lease s);
+     parseable buf;
+     let dhcpdiscover = Rresult.R.get_ok @@ Dhcp_wire.pkt_of_buf buf (Cstruct.len buf) in
+     Alcotest.(check (option msgtype)) "sent DHCPDISCOVER on receiving NAK to renewal request"
+       (Some DHCPDISCOVER) (find_message_type dhcpdiscover.options)
+
 let random_init n =
   let (s, _) = Dhcp_client.create Defaults.client_mac in
   "random buffer entry to INIT client", `Quick, (no_result s n)
@@ -183,5 +266,10 @@ let () =
        "dhcp client sends a dhcp packet in response to DHCPOFFER", `Quick, client_asks_dhcprequest;
        "dhcp server sends a DHCPACK in response to client DHCPREQUEST", `Quick, server_gives_dhcpack;
        "dhcp client returns lease after receiving DHCPACK", `Quick, client_returns_lease;
+       "renewal generates a dhcp packet w/bound client", `Quick, renew_generates_packet;
+       "renewal fails on unbound client", `Quick, no_lease_no_renewal;
+       "dhcp server accepts renewal request", `Quick, server_accepts_renewal;
+       "dhcp client accepts successful lease renewal", `Quick, client_accepts_renewal;
+       "dhcp client starts new lease transaction if renewal is declined", `Quick, client_rebinds;
       ]
     ]
