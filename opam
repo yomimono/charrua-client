@@ -21,14 +21,14 @@ depends: [
   "ocamlfind" {build}
   "topkg"     {build}
   "alcotest"     {test}
-  "charrua-core" {>= "0.4"}
+  "charrua-core" {>= "0.5"}
   "cstruct"
   "ipaddr"
   "rresult"
   "mirage-random" {>= "1.0.0"}
   "duration"
   "logs"
-  "tcpip" {>= "3.0.0"}
+  "tcpip" {>= "3.1.0"}
   "fmt"
 ]
 depopts: [
