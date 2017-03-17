@@ -145,7 +145,8 @@ let input t buf =
     | Some DHCPACK, Renewing _ -> {t with state = Bound incoming}, None
     | Some DHCPNAK, Requesting _ | Some DHCPNAK, Renewing _ ->
       let (t, b) = create ~requests:t.request_options t.srcmac in t, Some b
-    | Some DHCPACK, Selecting _ | Some DHCPACK, Bound _ -> (* not relevant *)
+    | Some DHCPACK, Selecting _ (* too soon *)
+    | Some DHCPACK, Bound _ -> (* too late *)
       t, None
     | Some DHCPDISCOVER, _ | Some DHCPDECLINE, _ | Some DHCPRELEASE, _
     | Some DHCPINFORM, _ | Some DHCPREQUEST, _ ->
@@ -154,9 +155,11 @@ let input t buf =
     | Some DHCPNAK, Selecting  _| Some DHCPNAK, Bound _ -> t, None (* irrelevant *)
     | Some DHCPLEASEQUERY, _ | Some DHCPLEASEUNASSIGNED, _
     | Some DHCPLEASEUNKNOWN, _ | Some DHCPLEASEACTIVE, _
-    | Some DHCPBULKLEASEQUERY, _ | Some DHCPLEASEQUERYDONE, _ -> (* what are these?? *)
+    | Some DHCPBULKLEASEQUERY, _ | Some DHCPLEASEQUERYDONE, _ ->
+      (* these messages are for relay agents to extract information from servers;
+       * our client does not care about them and shouldn't reply *)
       t, None
-    | Some DHCPFORCERENEW, _ -> t, None (* TODO unsupported *)
+    | Some DHCPFORCERENEW, _ -> t, None (* unsupported *)
     end else (t, None)
 
 let renew t = match t.state with
