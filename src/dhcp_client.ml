@@ -148,7 +148,7 @@ let input t buf =
     | Some DHCPACK, Selecting _ | Some DHCPACK, Bound _ -> (* not relevant *)
       t, None
     | Some DHCPDISCOVER, _ | Some DHCPDECLINE, _ | Some DHCPRELEASE, _
-    | Some DHCPREQUEST, _ ->
+    | Some DHCPINFORM, _ | Some DHCPREQUEST, _ ->
       (* we don't need to care about these client messages *)
       t, None 
     | Some DHCPNAK, Selecting  _| Some DHCPNAK, Bound _ -> t, None (* irrelevant *)
@@ -156,7 +156,6 @@ let input t buf =
     | Some DHCPLEASEUNKNOWN, _ | Some DHCPLEASEACTIVE, _
     | Some DHCPBULKLEASEQUERY, _ | Some DHCPLEASEQUERYDONE, _ -> (* what are these?? *)
       t, None
-    | Some DHCPINFORM, _ -> t, None (* TODO: this may contain useful information *)
     | Some DHCPFORCERENEW, _ -> t, None (* TODO unsupported *)
     end else (t, None)
 
