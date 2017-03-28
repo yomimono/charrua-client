@@ -6,6 +6,16 @@ archive(native) = "charrua-client.cmxa"
 plugin(byte) = "charrua-client.cma"
 plugin(native) = "charrua-client.cmxs"
 
+package "unix" (
+  version = "%%VERSION_NUM%%"
+  description = "UNIX client for getting a DHCP lease."
+  requires = "charrua-client logs"
+  archive(byte) = "charrua-client-unix.cma"
+  archive(native) = "charrua-client-unix.cmxa"
+  plugin(byte) = "charrua-client-unix.cma"
+  plugin(native) = "charrua-client-unix.cmxs"
+)
+
 package "mirage" (
   version = "%%VERSION_NUM%%"
   description = "Mirage functor with connect for gaining an ipv4 configuration via dhcp."

@@ -126,49 +126,49 @@ let create ?(requests = default_requests) srcmac =
 let input t buf =
   let open Dhcp_wire in
   match pkt_of_buf buf (Cstruct.len buf) with
-  | Error _ -> (t, None)
+  | Error _ -> `Noop
   | Ok incoming ->
     if compare incoming.xid (xid t) = 0 then begin
     match find_message_type incoming.options, t.state with
-    | None, _ -> (t, None)
+    | None, _ -> `Noop
     | Some DHCPOFFER, Selecting dhcpdiscover ->
         let dhcprequest = offer t ~server_ip:incoming.siaddr
                           ~request_ip:incoming.yiaddr
                           ~offer_options:incoming.options
                           ~xid:dhcpdiscover.xid 
                           ~chaddr:dhcpdiscover.chaddr in
-        {t with state = Requesting (incoming, dhcprequest)},
-          Some (Dhcp_wire.buf_of_pkt dhcprequest)
+        `Response ({t with state = Requesting (incoming, dhcprequest)},
+          (Dhcp_wire.buf_of_pkt dhcprequest))
     | Some DHCPOFFER, _ -> (* DHCPOFFER is irrelevant when we're not selecting *)
-        t, None
-    | Some DHCPACK, Requesting _ -> {t with state = Bound incoming}, None
-    | Some DHCPACK, Renewing _ -> {t with state = Bound incoming}, None
+      `Noop
+    | Some DHCPACK, Renewing _
+    | Some DHCPACK, Requesting _ -> `New_lease ({t with state = Bound incoming}, incoming)
     | Some DHCPNAK, Requesting _ | Some DHCPNAK, Renewing _ ->
-      let (t, b) = create ~requests:t.request_options t.srcmac in t, Some b
+      `Response (create ~requests:t.request_options t.srcmac)
     | Some DHCPACK, Selecting _ (* too soon *)
     | Some DHCPACK, Bound _ -> (* too late *)
-      t, None
+      `Noop
     | Some DHCPDISCOVER, _ | Some DHCPDECLINE, _ | Some DHCPRELEASE, _
     | Some DHCPINFORM, _ | Some DHCPREQUEST, _ ->
       (* we don't need to care about these client messages *)
-      t, None 
-    | Some DHCPNAK, Selecting  _| Some DHCPNAK, Bound _ -> t, None (* irrelevant *)
+      `Noop
+    | Some DHCPNAK, Selecting  _| Some DHCPNAK, Bound _ -> `Noop (* irrelevant *)
     | Some DHCPLEASEQUERY, _ | Some DHCPLEASEUNASSIGNED, _
     | Some DHCPLEASEUNKNOWN, _ | Some DHCPLEASEACTIVE, _
     | Some DHCPBULKLEASEQUERY, _ | Some DHCPLEASEQUERYDONE, _ ->
       (* these messages are for relay agents to extract information from servers;
        * our client does not care about them and shouldn't reply *)
-      t, None
-    | Some DHCPFORCERENEW, _ -> t, None (* unsupported *)
-    end else (t, None)
+      `Noop
+    | Some DHCPFORCERENEW, _ -> `Noop (* unsupported *)
+    end else `Noop
 
 let renew t = match t.state with
-  | Selecting _ | Requesting _ -> None
-  | Renewing (_lease, request) -> Some (t, (Dhcp_wire.buf_of_pkt request))
+  | Selecting _ | Requesting _ -> `Noop
+  | Renewing (_lease, request) -> `Response (t, Dhcp_wire.buf_of_pkt request)
   | Bound lease ->
     let open Dhcp_wire in
     let request = offer t ~xid:lease.xid ~chaddr:lease.chaddr
       ~server_ip:lease.siaddr ~request_ip:lease.yiaddr
       ~offer_options:lease.options in
     let state = Renewing (lease, request) in
-    Some ({t with state = state}, (Dhcp_wire.buf_of_pkt request))
+    `Response ({t with state = state}, (Dhcp_wire.buf_of_pkt request))
