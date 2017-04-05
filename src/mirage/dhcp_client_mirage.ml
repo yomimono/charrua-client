@@ -83,7 +83,7 @@ module Make(Time : Mirage_types_lwt.TIME) (Net : Mirage_types_lwt.NETWORK) = str
         c := client;
         Log.info (fun f -> f "Timeout expired without a usable lease!  Starting over...");
         Log.debug (fun f -> f "New lease attempt: %a" Dhcp_client.pp !c);
-        get_lease dhcpdiscover 
+        get_lease dhcpdiscover
     in
     let listen () =
       Net.listen net (fun buf ->

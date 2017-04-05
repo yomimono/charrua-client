@@ -94,18 +94,23 @@ let offer t ~xid ~chaddr ~server_ip ~request_ip ~offer_options =
   in
   make_request ~xid ~chaddr ~srcmac:t.srcmac ~siaddr:server_ip ~options:options ()
 
-let create ?(requests = default_requests) srcmac =
+let create ?requests srcmac =
   let open Constants in
+  let open Dhcp_wire in
   Stdlibrandom.initialize ();
   let xid = Cstruct.BE.get_uint32 (Stdlibrandom.generate 4) 0 in
-  let pkt = Dhcp_wire.({
+  let requests = match requests with
+  | None | Some [] -> default_requests
+  | Some requests -> requests
+  in
+  let pkt = {
     htype; hlen; hops; sname; file;
     srcmac;
     dstmac = Macaddr.broadcast;
     srcip = Ipaddr.V4.any;
     dstip = Ipaddr.V4.broadcast;
-    srcport = Dhcp_wire.client_port;
-    dstport = Dhcp_wire.server_port;
+    srcport = client_port;
+    dstport = server_port;
     op = BOOTREQUEST;
     xid;
     secs = 0;
@@ -115,13 +120,13 @@ let create ?(requests = default_requests) srcmac =
     siaddr = Ipaddr.V4.any;
     giaddr = Ipaddr.V4.any;
     chaddr = srcmac;
-    options = Dhcp_wire.([
+    options = [
       Message_type DHCPDISCOVER;
       Parameter_requests requests;
-    ]);
-  }) in
+    ];
+  } in
   {srcmac; request_options = requests; state = Selecting pkt},
-    (Dhcp_wire.buf_of_pkt pkt)
+    Dhcp_wire.buf_of_pkt pkt
 
 let input t buf =
   let open Dhcp_wire in
@@ -135,7 +140,7 @@ let input t buf =
         let dhcprequest = offer t ~server_ip:incoming.siaddr
                           ~request_ip:incoming.yiaddr
                           ~offer_options:incoming.options
-                          ~xid:dhcpdiscover.xid 
+                          ~xid:dhcpdiscover.xid
                           ~chaddr:dhcpdiscover.chaddr in
         `Response ({t with state = Requesting (incoming, dhcprequest)},
           (Dhcp_wire.buf_of_pkt dhcprequest))

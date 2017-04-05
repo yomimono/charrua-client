@@ -24,7 +24,7 @@ module Defaults = struct
     ~network:server_network ~range ~options
 end
 
-let parseable buf = 
+let parseable buf =
   Alcotest.(check bool) "buffer we constructed is valid dhcp" true (Dhcp_wire.is_dhcp buf (Cstruct.len buf))
 
 let assert_reply p =

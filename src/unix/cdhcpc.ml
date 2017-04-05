@@ -28,11 +28,10 @@ let read_packet ic =
                        - ipv4_adjustment
                        - Udp_wire.sizeof_udp
                        - fixed_dhcp_header) in
-    add_some buf more_to_read 
+    add_some buf more_to_read
   with | Invalid_argument _ -> Error "too small"
 
-
-let get_lease ?(mac=random_mac ()) ic oc =
+let try_lease ?(mac=random_mac ()) ic oc =
   let (client, buf) = Dhcp_client.create mac in
   let () = output_string oc (Cstruct.to_string buf) in
   let () = flush oc in
@@ -41,7 +40,7 @@ let get_lease ?(mac=random_mac ()) ic oc =
     | Some lease -> (client, lease)
     | None ->
       match read_packet ic with
-      | Error e -> 
+      | Error e ->
         Printf.eprintf "%s: %s\n%!" "You'll have to try harder than that to make a readable packet!!!" e; step client
       | Ok input_buffer ->
         match Dhcp_client.input client (Cstruct.of_bytes input_buffer) with
@@ -56,17 +55,17 @@ let get_lease ?(mac=random_mac ()) ic oc =
   in
   step client
 
-(* renew_lease will try ad inifinitum to renew an existing lease;
+(* try_renew will try ad inifinitum to renew an existing lease;
  * it needs external controls to recognize that it has entered the REBINDING
  * period and should give up and begin a new lease transaction *)
-let renew_lease ic oc client =
+let try_renew ic oc client =
   match Dhcp_client.renew client with
   | `Noop -> None
   | `Response (client, buf) ->
     let () = output oc (Bytes.of_string @@ Cstruct.to_string buf) 0 (Cstruct.len buf) in
     let rec step client =
       match read_packet ic with
-      | Error e -> 
+      | Error e ->
         Printf.eprintf "%s: %s\n%!" "You'll have to try harder than that to make a readable packet!!!" e; step client
       | Ok input_buffer ->
         match Dhcp_client.input client (Cstruct.of_bytes input_buffer) with
@@ -79,19 +78,87 @@ let renew_lease ic oc client =
     in
     step client
 
-(* a pretty bad text adventure *)
+module Make(Time : Mirage_time_lwt.S) = struct
+  
+  let rec get_lease ?(timeout=Duration.of_sec 3) ~mac ic oc : (Dhcp_client.t * Dhcp_wire.pkt) Lwt.t =
+    let retry timeout = Lwt.bind (Time.sleep_ns timeout) (fun () ->
+        Printf.eprintf "Timeout %f expired with no lease; starting over" @@ Duration.to_f timeout;
+        get_lease ~timeout ~mac ic oc
+      )
+    in
+    Lwt.pick [
+      Lwt.return @@ try_lease ~mac ic oc;
+      retry timeout;
+    ]
+ 
+  (* [rebinding_time] is the timeout until we should give up renewing the lease,
+   * and just try to get a new lease entirely (i.e., enter the REBINDING state).
+   * [retry_time] is the timeout between successive lease renewal attempts.
+   * If [retry_time] is longer than [rebinding_time], only one attempt to renew
+   * the lease will be made before attempting to get an entirely new lease.
+   * *)
+  let get_renew ?(rebinding_time=Duration.of_sec 2) ?(retry_time=Duration.of_sec 1) ~mac ic oc client =
+    let rec renew () =
+      Lwt.pick [
+        Lwt.return @@ try_renew ic oc client;
+        Lwt.bind (Time.sleep_ns retry_time) (fun () ->
+          Printf.eprintf "Timeout %f expired with no renewal; trying again" @@ Duration.to_f retry_time;
+          renew ())
+      ]
+    in
+    Lwt.pick [
+      renew ();
+      Lwt.bind (Time.sleep_ns rebinding_time) (fun () ->
+        Printf.eprintf "Timeout %f expired with no renewal; abandoning this lease and trying for a new one" @@ Duration.to_f rebinding_time;
+        Lwt.map (fun l -> Some l) (get_lease ~mac ic oc)
+      )
+    ]
+  
+end
+
+let get_times options =
+  let t2_timeout = match Dhcp_wire.find_rebinding_t2 options with
+  | Some time -> Duration.of_sec @@ Int32.to_int time | None -> Duration.of_sec 3600
+  in
+  let t1_timeout = match Dhcp_wire.find_renewal_t1 options with
+  | Some time -> Duration.of_sec @@ Int32.to_int time | None -> Int64.div t2_timeout 2L
+  in
+  let delay_time = match Int64.compare t1_timeout t2_timeout with
+  | n when n < 0 -> Int64.sub t2_timeout t1_timeout
+  | _ -> t1_timeout
+  in
+  (t1_timeout, delay_time)
+
+module Time =
+  struct type 'a io = 'a Lwt.t let sleep_ns a = Lwt_unix.sleep (Duration.to_f a) end
+
+(* a pretty bad text adventure (now with waiting!) *)
 let () =
+  let open Lwt.Infix in
+  let module Client = Make(Time) in
   set_binary_mode_in stdin true;
   set_binary_mode_out stdout true;
-  try
-    let (client, lease) = get_lease stdin stdout in
-    Printf.eprintf "You win!: %s\n%!" @@ Dhcp_wire.pkt_to_string lease;
-    Printf.eprintf "%s\n%!" "Get ready for bonus round!!!";
-    match renew_lease stdin stdout client with
-    | Some (_c, new_lease) ->
-      Printf.eprintf "%s\n%!" "BONUS ROUND WIN!!!\n%!";
-      Printf.eprintf "%s\n%!" @@ Dhcp_wire.pkt_to_string new_lease
-    | None ->
-      Printf.eprintf "%s\n%!" "you lost the bonus round :("
-  with
-  | End_of_file -> exit 1
+  let mac = random_mac () in
+  Lwt_main.run @@
+    Lwt.catch (fun () ->
+      Client.get_lease ~mac ~timeout:(Duration.of_ms 1) stdin stdout >>= fun (client, lease) ->
+      Printf.eprintf "You win!: %s\n%!" @@ Dhcp_wire.pkt_to_string lease;
+      Printf.eprintf "%s\n%!" "Get ready for bonus round!!!";
+      let rec renew client mac lease =
+        let (t1_timeout, delay_time) = get_times lease.Dhcp_wire.options in
+        Time.sleep_ns t1_timeout >>= fun () ->
+        Client.get_renew ~mac ~rebinding_time:delay_time stdin stdout client >>= function
+        | Some (c, new_lease) ->
+          Printf.eprintf "%s\n%!" "BONUS ROUND WIN!!!\n%!";
+          Printf.eprintf "%s\n%!" @@ Dhcp_wire.pkt_to_string new_lease;
+          renew c mac new_lease
+        | None ->
+          Printf.eprintf "%s\n%!" "you lost the bonus round :(";
+          exit 1
+      in
+      renew client mac lease
+    )
+    (
+      function | End_of_file -> exit 1
+               | exn -> raise exn
+    )
