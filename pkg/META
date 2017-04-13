@@ -9,7 +9,7 @@ plugin(native) = "charrua-client.cmxs"
 package "unix" (
   version = "%%VERSION_NUM%%"
   description = "UNIX client for getting a DHCP lease."
-  requires = "charrua-client logs rresult lwt"
+  requires = "charrua-client logs rresult lwt mirage-net-fd"
   archive(byte) = "charrua-client-unix.cma"
   archive(native) = "charrua-client-unix.cmxa"
   plugin(byte) = "charrua-client-unix.cma"
