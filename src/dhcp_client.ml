@@ -5,6 +5,7 @@ type state  = | Selecting of Dhcp_wire.pkt (* dhcpdiscover sent *)
 type t = {
   srcmac : Macaddr.t;
   request_options : Dhcp_wire.option_code list;
+  xid : Cstruct.uint32;
   state  : state;
 }
 
@@ -94,11 +95,13 @@ let offer t ~xid ~chaddr ~server_ip ~request_ip ~offer_options =
   in
   make_request ~xid ~chaddr ~srcmac:t.srcmac ~siaddr:server_ip ~options:options ()
 
-let create ?requests srcmac =
+let create ?with_xid ?requests srcmac =
   let open Constants in
   let open Dhcp_wire in
-  Stdlibrandom.initialize ();
-  let xid = Cstruct.BE.get_uint32 (Stdlibrandom.generate 4) 0 in
+  let xid = match with_xid with
+  | None -> Stdlibrandom.initialize (); Cstruct.BE.get_uint32 (Stdlibrandom.generate 4) 0
+  | Some xid -> xid
+  in
   let requests = match requests with
   | None | Some [] -> default_requests
   | Some requests -> requests
@@ -125,7 +128,7 @@ let create ?requests srcmac =
       Parameter_requests requests;
     ];
   } in
-  {srcmac; request_options = requests; state = Selecting pkt},
+  {srcmac; xid; request_options = requests; state = Selecting pkt},
     Dhcp_wire.buf_of_pkt pkt
 
 let input t buf =
@@ -149,7 +152,7 @@ let input t buf =
     | Some DHCPACK, Renewing _
     | Some DHCPACK, Requesting _ -> `New_lease ({t with state = Bound incoming}, incoming)
     | Some DHCPNAK, Requesting _ | Some DHCPNAK, Renewing _ ->
-      `Response (create ~requests:t.request_options t.srcmac)
+      `Response (create ~with_xid:t.xid ~requests:t.request_options t.srcmac)
     | Some DHCPACK, Selecting _ (* too soon *)
     | Some DHCPACK, Bound _ -> (* too late *)
       `Noop
