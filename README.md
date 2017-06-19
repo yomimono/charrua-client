@@ -1,5 +1,3 @@
-charrua-client is a DHCP client powered by [charrua-core](https://github.com/haesbaert/charrua-core).
+charrua-client is now part of [charrua-dhcp](https://github.com/mirage/charrua-core).
 
-The base library exposes a simple state machine for acquiring a DHCP lease.
-
-An optional sublibrary, `charrua-client.mirage`, exposes an additional functor for use with the [MirageOS library operating system](https://github.com/mirage/mirage).
+This repository is deprecated and will soon be removed.
